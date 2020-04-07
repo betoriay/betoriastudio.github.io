@@ -1,0 +1,293 @@
+---
+title: "MY472 Final Exam Part A: Data Cleaning"
+---
+
+The overall question you will be trying to answer in this final exam is: __Why is there so much negativity on Facebook comments about politics?__
+
+To answer this question, I will share with you a dataset that contains public Facebook data that corresponds to all the posts by Members of the U.S. Congress between January 1st, 2015 and December 31st, 2016, as well as all the comments and reactions to these posts. In addition, you will also have a dataset with sentiment predictions for each comment (negative, neutral, positive).
+
+As a first step, you will have to clean the data and convert it to a format that can facilitate the subsequent analysis. I recommend you use a SQLite database, but you can also work with regular data frames if you prefer.
+
+You have access to five data files. Read the text below for important information regarding their content, as well as links to download the files:
+
+1 - `congress-list.csv` contains information about each Member of Congress, including gender, type (House representative or Senator), party (Democrat, Republican, Independent), `nominate_dim1` (an estimate of political ideology, from -1 very liberal to +1 very conservative), state and district.
+
+IMPORTANT: this file also contains two important variables to merge all the different datasets. `bioguide_id` is the main key used to merge with external sources. `facebook` is the Facebook ID for each Member of Congress, and you should use this key to merge with the rest of the internal data sources. All files in the remaining datasets here contain this ID in the file name.
+
+2 - [`facebook-114-posts.zip`](https://www.dropbox.com/s/trznn23wtotnkon/facebook-114-posts.zip?dl=0) contains multiple .csv files with information about each post of the legislators' pages. All variables should be self-explanatory. Remember that you shouldn't use `from_id` or `from_name` to merge across different data sources. `id` is the unique numeric ID for each post.
+
+3 - [`facebook-114-comments.zip`](https://www.dropbox.com/s/vu2po7a35tqs3fg/facebook-114-comments.zip?dl=0) contains multiple .csv files with information about each comment on the legislators' pages. Each file corresponds to a different page. `from_id` and `from_name` here correspond to the person who wrote the comment. `likes_count` is the number of likes on each comment. `comments_count` is the number of replies to each comment. `id` is the unique numeric ID for each comment. `post_id` is the ID of the post to which this comment is replying (i.e. `id` in the posts .csv files). `is_reply` indicates whether the comment is a top-level comment (FALSE) or is a reply to an existing comment (TRUE); and if so, `in_reply_to_id` indicates the ID of the comment to which this comment is replying.
+
+Some additional information: remember that Facebook comments have a threaded structure: whenever you write a comment, you can comment directly on the post (top-level comment) or as a reply to an existing comment (reply).
+
+4 - [`facebook-114-reactions-totals.zip`](https://www.dropbox.com/s/yy3ams7szs3fa73/facebook-114-reactions-totals.zip?dl=0) offers statistics on the total of reactions (love, haha, angry...) to each post. `id` here corresponds to `id` in the `facebook-114-posts` datasets.
+
+5 - [`facebook-114-comments-sentiment.zip`](https://www.dropbox.com/s/iovfv0l2wj2j5dp/facebook-114-comments-sentiment.zip?dl=0) contains datasets that predict the sentiment of each comment in the `facebook-114-comments.zip` files. There are three variables measuring the probability that each comment is negative, neutral or positive. They add up to one. You can either use the probabilities or, for each comment, predict a category based on which probability is highest.
+
+**NOTE:** as you work on cleaning the dataset, if anything is not clear, you can ask in the forum for clarification.
+
+1. Before you start cleaning the data, first consider how to design the database. Read the rest of the final exam to help you think through the options. How many tables should you have, and why? Clue: the answer is not five!
+
+*Three tables should I have. I will combine facebook-posts and facebook-reactions-to-posts into one big table. Similary, facebook-comments and facebook-comments-sentiment will also be combined into one table. Congress-list will be writtent into a single table. Three table is convenient and efficient for analysing the rest of the questions, where I can only use the single table or at most join two tables to write the code.*
+
+2. Do any required steps necessary to clean and merge the data; and then enter the datasets into a SQLite database, or into data frames that you can save to disk.
+
+Make sure you do this in an efficient way. Pay special attention to variables that you will *not* need, and drop them from the tables/data.frames to save memory and be more efficient.
+
+```{r, message = FALSE, echo = TRUE, warning = FALSE}
+library(data.table)
+library(tidyverse)
+
+#All files in the remaining datasets here contain 'facebook' ID from congress-list in the file name.
+#Considering the convenience and currency in joining posts/comments table
+#with the congress_list
+#I will add the file name as a new column varaibe in while append mutiple
+#posts and comments_sentiment
+
+#cited by 'leerssej's anaswer on Stackoverflow
+#https://stackoverflow.com/questions/11433432/how-to-import-multiple-csv-files-at-once/11433532#11433532
+read_plus <- function(flnm) {
+    read_csv(flnm) %>% 
+        mutate(filename = flnm)
+}
+
+#apply the function
+tbl_with_sources <-
+    list.files(path = "./facebook-114-posts/",
+               pattern = "*.csv", 
+               full.names = T) %>% 
+     map_df(~read_plus(.))
+
+cmt_with_sources <-
+    list.files(path = "./facebook-114-comments-sentiment/",
+               pattern = "*.csv", 
+               full.names = T) %>% 
+     map_df(~read_plus(.))
+
+#delet the path and .csv extention of the original values of the filename
+library(tools)
+filenames <- sub("\\.[[:alnum:]]+$", "", basename(as.character(tbl_with_sources$filename)))
+tbl_with_sources$filename <- filenames
+
+cmt_filenames1 <- sub("\\.[[:alnum:]]+$", "", basename(as.character(cmt_with_sources$filename)))
+cmt_filenames2 <- sub("_comments", "", basename(cmt_filenames1))
+cmt_with_sources$filename <- cmt_filenames2
+
+##----Append multiple files into one single dataframe dat_csv----
+library(plyr)
+library(readr)
+
+mydir = "facebook-114-reactions-totals"
+myfiles = list.files(path = mydir, pattern = "*.csv", full.names = TRUE)
+dat_csv = ldply(myfiles, read_csv)
+
+mydir1 = "facebook-114-comments"
+myfiles1 = list.files(path = mydir1, pattern = "*.csv", full.names = TRUE)
+dat_csv1 = ldply(myfiles1, read_csv)
+
+##----Read congress-list----
+congress <- read.csv("congress-list.csv", stringsAsFactors = F)
+##---Conduct statistics summary for four appended files
+#summary(tbl_with_sources)
+#summary(cmt_with_sources)
+#summary(dat_csv)
+#summary(dat_csv1)
+#summary(congress)
+
+##----Data Cleaning Process----
+#1.Delete any post released out of 20150101-20161231 & any comments made before 20150101
+fb_post <- tbl_with_sources[!tbl_with_sources$created_time > "2016-12-31 23:59:59", ]
+fb_comment <- dat_csv1[!dat_csv1$created_time < "2015-01-01 00:00:00", ]
+
+#2.Remove duplication and NA in post reactions & comment-sentiment
+fb_posts <- unique(fb_post)
+pst_reaction <- na.omit(unique(dat_csv))
+fb_cmt <- unique(fb_comment)
+cmt_sentiment <- na.omit(unique(cmt_with_sources))
+#nrow(unique(congress)) == nrow(congress) is TRUE, so there is no duplication in congress
+
+#3.Delet unrelated variables in dataframe
+fb_posts$link <- NULL
+fb_posts$story <- NULL
+pst_reaction$likes_count <- NULL
+fb_cmt$from_id <- NULL
+fb_cmt$from_name <- NULL
+
+#4.Add an extra column "sentiment_type" for cmt_sentiment
+senti_names <- c("negative", "neutral", "positive")
+sentiment_type <- apply(cmt_sentiment[ , 2:4], 1, function(x) senti_names[which.max(x)])
+cmt_sentiment$senti_type <- sentiment_type
+
+##----Merge with related datasets----
+#Consider not all comments or post will get sentiment analysis data nor reactions data,
+#therefore, we merge on sentiment and reaction, for more strict and valid analysis.
+facebook_comments <- merge(x = fb_cmt, y = cmt_sentiment, by = "id", all.y = TRUE)
+facebook_posts <- merge(x = fb_posts, y = pst_reaction, by = "id", all.y = TRUE)
+
+##----Convert all variables into their proper formats----
+#str(congress)
+#in congress dataframe, convert gender, type, party, district_code into factor type
+congress$gender <- as.factor(congress$gender)
+congress$type <- as.factor(congress$type)
+congress$party <- as.factor(congress$party)
+congress$district_code <- as.factor(congress$district_code)
+
+#str(facebook_posts)
+#in facebook_postsdataframe, convert type into factor; 
+#created_time into chracter;
+#from_id into character
+facebook_posts$type <- as.factor(facebook_posts$type)
+facebook_posts$created_time <- as.character(as.Date(as.POSIXct(facebook_posts$created_time, "UTC")))
+facebook_posts$from_id <- as.character(facebook_posts$from_id)
+
+#str(facebook_comments)
+#in facebook_comments dataframe, convert senti_type into factor; 
+#created_time into character;
+facebook_comments$created_time <- as.character(as.Date(as.POSIXct(facebook_comments$created_time, "UTC")))
+facebook_comments$senti_type <- as.factor(facebook_comments$senti_type)
+
+##----Store data into SQLITE----
+library(DBI)
+db <- dbConnect(RSQLite::SQLite(), "USfacebook.sqlite")
+
+dbWriteTable(db, "uscongress", congress, overwrite = TRUE)
+dbWriteTable(db, "comments", facebook_comments, overwrite = TRUE)
+dbWriteTable(db, "posts", facebook_posts, overwrite = TRUE)
+
+```
+
+*One interesting finding in the duplication removing stage of data cleaning process is the existence of ****'semi-duplicated'.**** *Basically, there might be some totally duplicated observations within each dataframes, therefore, we use unique() function to eliminate them and then created a new merged datasets called facebook_comments. Futhermore, there are also some "semi-duplicated" scenarios, whose examples can be:*
+*1. one comment replied to various legislators' posts*
+*2. one comment replied to various others' comments*
+*Even if the time and also the content of the comment are the same, in order to investigate the negativity of each post and comment, this analysis treats these comments with same content posted by the same account and at same time, but replied to different posts or first level comments as separated comments identities.*
+
+*Same procedures are also applied to legislator posts, where only exist 10 duplicated post ids. This is a result of one duplicated rows and the rest of 9 are all due to legislator updated their profile pictures. Therefore, we keep the rest of 9.*
+
+3. Compute relevant summary statistics for your tables. You should **at least** answer the following questions: how many rows do you have in each table? what are the average values of all numeric variables? what are the distribution of the categorical variables? 
+
+```{r}
+dbListTables(db)
+dbGetQuery(db,
+           "SELECT COUNT(*) AS cmt_rows_number
+           FROM comments")
+dbGetQuery(db,
+           "SELECT COUNT(*) AS pst_rows_number
+           FROM posts")
+dbGetQuery(db,
+           "SELECT COUNT(*) AS cmt_rows_number
+           FROM uscongress")
+#facebook_comments and comments, facebook_posts and posts, congress and uscongress
+#are exactly same tables stored in R and sqlite.
+summary(congress)
+summary(facebook_comments)
+summary(facebook_posts)
+
+```
+
+
+*There are three tables in my sqlite, uscongress, posts, and comments. There are 532 rows in us congress, 200,333 rows in posts, and 8,435,926 rows in comments.*
+*Totally, there are six categorical (gender, type, party, district_code, senti_type, and type of post) variables in these three tables. In summary, our sample of US congress includes 532 legislators (104 Female and 428 Male), 432 of which are representatives, and the rest 100 are senators. They are from three different parties (230 are Democrat;300 are Repulican; 2 are Independent) and represent 54 districts.*
+
+
+```{r, message = FALSE, warning = FALSE}
+library(ggplot2)
+library(ggthemes)
+library(dbplyr)
+#aggregate raw categorical data from congress list
+cat_df1 <- congress[ , c("gender", "type", "party", "district_code")]
+p1 <- ggplot(cat_df1, aes(x = district_code)) +
+      geom_histogram(stat = "count") +
+      labs(title = "Disctribution of U.S. Congress District",
+           x = "\nDistrict Code", y = "Number of People") +
+      theme_economist() +
+      theme(axis.text.x = element_text(angle = 80, size = 6)) +
+      expand_limits(x = 0, y = 0)
+p2 <- ggplot(cat_df1, mapping = aes(x = type, fill = party)) +
+      geom_histogram(stat = "count") +
+      facet_wrap(~gender, nrow = 1) +
+      ggtitle("Distribution Characteristics of U.S. Congress")+
+      labs(x = "Type of Chamber", y = "Number of People") +
+      theme_economist() +
+      scale_fill_economist(name = "Party:") +
+      theme(legend.title = element_text(size = 12, face = "bold"))
+p1
+p2
+```
+
+
+
+*We got 8,435,926 comments with sentiment analysis. Surprisingly, nearly half of them (4,197,022) are categorized into negative. The rest of comments are approximately equally distributed into the netural and positive type.*
+
+```{r, message = FALSE}
+library(dplyr)
+library(ggpubr)
+library(gridExtra)
+cat_df2 <- facebook_comments[ , c("senti_type")]
+df <- data.frame(table(cat_df2))
+colnames(df) <- c("Sentiment Type", "Count")
+df <- df %>%
+  arrange(desc(`Sentiment Type`)) %>%
+  mutate(prop = round(Count*100/sum(Count), 1),
+         lab.ypos = cumsum(prop) - 0.5*prop)
+p3 <- ggplot(df, aes(x = "", y = prop, fill = `Sentiment Type`)) +
+      geom_bar(width = 1, stat = "identity") + coord_polar("y", start = 0) +
+      labs(title = "Distribution of Facebook Comment Sentiment and Post Type\n\n") +
+      scale_fill_manual(values=c("#999999", "#E69F00", "#F0E442")) +
+      theme(plot.title = element_text(size = 12, face = "bold",
+                                      margin = margin(10, 0, 10, 0))) +
+      theme_minimal() #ggtitle includes the title of p4 just for convenience
+
+```
+
+
+*Among the 200,333 posts we collect, they are in seven different formats(photo, linke, video, status, event, music and note).*
+
+```{r}
+cat_df3 <- facebook_posts[ , c("type")]
+df3 <- data.frame(table(cat_df3))
+colnames(df3) <- c("Post Type", "Count")
+df3 <- df3 %>%
+  arrange(desc(`Post Type`)) %>%
+  mutate(prop = round(Count*100/sum(Count), 1),
+         lab.ypos = cumsum(prop) - 0.5*prop)
+p4 <- ggplot(df3, aes(x = "", y = prop, fill = `Post Type`)) +
+      geom_bar(width = 1, stat = "identity") + coord_polar("y", start = 0) +
+      scale_fill_manual(values=c("#FFDB6D", "#C4961A", "#F4EDCA", 
+                "#D16103", "#C3D7A4", "#52854C", "#4E84C4")) +
+      theme_minimal() 
+grid.arrange(p3, p4, nrow = 1)
+```
+
+
+*Average values of all numeric variables in these three tables are summarized into the table below.*
+```{r}
+av1 <- dbGetQuery(db,
+           "SELECT AVG(nominate_dim1) AS political_ideology
+           FROM uscongress")
+av2 <- dbGetQuery(db,
+           "SELECT AVG(likes_count) AS likes_count, 
+           AVG(comments_count) AS comments_count ,
+           AVG(shares_count) AS shares_count, 
+           AVG(love_count) AS love_count,
+           AVG(haha_count) AS haha_count, 
+           AVG(wow_count) AS wow_count,
+           AVG(sad_count) AS sad_count, 
+           AVG(angry_count) AS angry_count
+           FROM posts")
+av3 <- dbGetQuery(db,
+           "SELECT AVG(likes_count) AS likes_count,
+           AVG(comments_count) AS comments_count,
+           AVG(neg_sentiment) AS neg_sentiment,
+           AVG(neu_sentiment) AS neu_sentiment,
+           AVG(pos_sentiment) AS pos_sentiment
+           FROM comments")
+fb1 <- data.frame(t(av1))
+fb2 <- data.frame(t(av2))
+fb3 <- data.frame(t(av3))
+colnames(fb1) <- "AVG"
+colnames(fb2) <- "AVG"
+colnames(fb3) <- "AVG"
+rbind(fb1, fb2, fb3)
+
+```
+

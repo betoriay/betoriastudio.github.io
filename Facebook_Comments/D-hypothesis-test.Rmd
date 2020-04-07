@@ -1,0 +1,161 @@
+---
+title: "MY472 Final Exam Part D: Testing a Substantive Hypothesis"
+---
+
+To conclude this assignment, you will offer preliminary evidence regarding one potential explanation about why there is so much negativity on Facebook comments: **negative comments are widespread because they receive more engagement.** In other words, maybe negative comments generated the type of reactions on people that make them more likely to like those comments or to reply to those comments.
+
+1. Do negative comments receive more likes than neutral or positive comments? Use any statistical or graphical methods that you consider appropriate to answer this question.
+
+*Considering different types of comments on facebook, we discuss the question in three different situations.*
+
+```{r, message = FALSE}
+library(DBI)
+db <- dbConnect(RSQLite::SQLite(), "USfacebook.sqlite")
+
+#How many comments are there in different sentiment types?
+dbGetQuery(db,
+           "SELECT COUNT(*) AS comments_count,
+           senti_type
+           FROM comments
+           GROUP BY senti_type")
+
+#From this table we know that comments among these three different types of sentiment are not farily distributed, therefore, we use average likes_amount to measure its extend of widespread
+
+#all comments
+all_likedf <- dbGetQuery(db,
+           "SELECT CAST(ROUND(AVG(likes_count), 2) 
+           AS DEC(10, 2))all_comments, 
+           senti_type
+           FROM comments
+           GROUP BY senti_type
+           ORDER BY all_comments")
+
+#only comments to legislators' post
+pst_likedf <- dbGetQuery(db,
+           "SELECT CAST(ROUND(AVG(likes_count), 2) 
+           AS DEC(10, 2)) top_level_comment,
+           senti_type
+           FROM comments
+           WHERE is_reply = 0
+           GROUP BY senti_type
+           ORDER BY top_level_comment")
+
+#only comments to others' comments
+cmt_likedf <- dbGetQuery(db,
+           "SELECT CAST(ROUND(AVG(likes_count), 2) 
+           AS DEC(10, 2)) reply, 
+           senti_type
+           FROM comments
+           WHERE is_reply = 1
+           GROUP BY senti_type
+           ORDER BY reply")
+
+inter_df <- merge(x = all_likedf, y = pst_likedf, by = "senti_type", all = TRUE)
+three_likedf <- merge(x = inter_df, y = cmt_likedf, by = "senti_type", all = TRUE)
+
+##----Statistical Summary----
+three_likedf
+
+##----Geographical Summary----
+#convert from wide to long
+library(tidyr)
+library(ggplot2)
+data_long <- gather(three_likedf, Situation, Likes_Count, 
+                    all_comments:reply, factor_key = TRUE)
+ggplot(data_long, aes(x = Situation, y = Likes_Count, fill = senti_type)) +
+      geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+      labs(x ="",
+           y = "Likes Count of Different Types of Comments",
+           title = "Negative Comments Are Easily to Get More Likes") +
+      scale_fill_manual("Type of Comments:",
+                        values = c("#F7D705", "#80D348", "#48B0D3")) +
+      theme(plot.title = element_text(size = 3.5, face = "bold",
+                                      margin = margin(10, 0, 10, 0))) +
+      theme_bw()
+
+```
+
+
+*In both statistical and geographical summary, it is clearly to see that whenever what kind of comments they are (either top-level or a reply), negative comments are easily to get more likes. Moreover, it is worthwhile to notice that when people reply to legislators' posts in a negative expression, they will be more easily to get more likes counts.*
+
+2. Replicate the analysis above, but this time separately for Republicans and Democrats. Do you find any differences?
+
+```{r, message = FALSE}
+toplevel <- dbGetQuery(db, #CAST(ROUND(AVG(c.likes_count), 2) AS DEC(10, 2))
+           "SELECT CAST(ROUND(AVG(c.likes_count), 2) 
+           AS DEC(10, 2)) AS total_likes, 
+           c.senti_type,
+           u.party
+           FROM comments AS c JOIN posts AS p JOIN uscongress AS u
+           ON c.post_id = p.id AND p.filename = u.facebook
+           WHERE c.is_reply = 0
+           GROUP BY c.senti_type, u.party")
+rplylegel <- dbGetQuery(db,
+           "SELECT CAST(ROUND(AVG(c.likes_count), 2) 
+           AS DEC(10, 2)) AS total_likes, 
+           c.senti_type,
+           u.party
+           FROM comments AS c JOIN posts AS p JOIN uscongress AS u
+           ON c.post_id = p.id AND p.filename = u.facebook
+           WHERE c.is_reply = 1
+           GROUP BY c.senti_type, u.party")
+all_level <- dbGetQuery(db,
+           "SELECT CAST(ROUND(AVG(c.likes_count), 2) 
+           AS DEC(10, 2)) AS total_likes, 
+           c.senti_type,
+           u.party
+           FROM comments AS c JOIN posts AS p JOIN uscongress AS u
+           ON c.post_id = p.id AND p.filename = u.facebook
+           GROUP BY c.senti_type, u.party")
+
+##----Statistical Summary----
+toplevel
+rplylegel
+all_level
+
+##----Geographical Summary----
+pp1 <- ggplot(toplevel, aes(x = party, y = total_likes, fill = senti_type)) +
+      geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+      labs(x ="Party",
+           y = "Likes Count",
+           title = "Top Level Comments") +
+      scale_fill_manual("Type of Comments:",
+                        values = c("#E66EB4", "#946EE6", "#0E8EC9")) +
+      theme(plot.title = element_text(size = 0.8, face = "bold",
+                                      margin = margin(10, 0, 10, 0)),
+            axis.text.y = element_text(size = 0.5)) +
+      theme_bw()
+pp2 <- ggplot(rplylegel, aes(x = party, y = total_likes, fill = senti_type)) +
+      geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+      labs(x ="Party",
+           y = "Likes Count",
+           title = "Reply") +
+      scale_fill_manual("Type of Comments:",
+                        values = c("#E66EB4", "#946EE6", "#0E8EC9")) +
+      theme(plot.title = element_text(size = 0.8, face = "bold",
+                                      margin = margin(10, 0, 10, 0)),
+            axis.text.y = element_text(size = 0.5)) +
+      theme_bw()
+pp3 <- ggplot(all_level, aes(x = party, y = total_likes, fill = senti_type)) +
+      geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+      labs(x ="Party",
+           y = "Likes Count",
+           title = "ALL Level Comments") +
+      scale_fill_manual("Type of Comments:",
+                        values = c("#E66EB4", "#946EE6", "#0E8EC9")) +
+      theme(plot.title = element_text(size = 0.8, face = "bold",
+                                      margin = margin(10, 0, 10, 0)),
+            axis.text.y = element_text(size = 0.5)) +
+      theme_bw()
+library(gridExtra)
+grid.arrange(pp1, pp2, pp3, ncol = 1)
+```
+
+
+*When we separate for Democrat and Republican, I find that the original conclusion should be more rigouros.*
+*Firstly, no matter what the type of the comments is, there is no obvious difference between the likes count for people making negative or positive comments to Independent legislators' posts.*
+*Secondly, in terms of the same party, people make negative comments directly to legislators' posts will gain more likes than reply to others' comments.*
+*Thirdly, when repling to other people's comments, both negative comments and positive comments will receive similar numbers of likes count (but more than netrual type). In contrast, when replying to Democratic or Republican legislators' posts directly, negative comments always get more likes count than the positive one. However, there is no obvious differences within these groups, which means that making negative comments to Democratic or Republican legislators' posts could get similar likes count.*
+
+*To sum up, receiving more likes is not the only determinant for people deciding whether to make negative comments or not. Legislator's Party (if we only consider Republican and Democrats) also does not weigh heavily on making negative or positive comments/reply. However, the type of comments is a potential factor to influence the popularity of negative comments, but is not precious to treat it as a motivation.*
+

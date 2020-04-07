@@ -1,0 +1,162 @@
+---
+title: "MY472 Final Exam Part B: Descriptive Analysis"
+---
+
+The goal of this second part of the assignment is to analyze the datasets you just created in order to answer a set of descriptive questions. Your answer to the questions will offer important context towards the overall research question:  __Why is there so much negativity on Facebook comments about politics?__
+
+For each item below, you should write code with any statistical or graphical analysis that you consider appropriate, and then answer the question.
+
+1. First of all, how much negativity is there on the comments of pages by U.S. legislators? In other words, what proportion of comments are negative?
+
+```{r}
+#Here we only consider comments on legislators' posts
+library(DBI)
+db <- dbConnect(RSQLite::SQLite(), "USfacebook.sqlite")
+dbGetQuery(db,
+           "SELECT (100.00 * SUM(CASE WHEN senti_type = 'negative'
+           THEN 1 ELSE 0 END)/COUNT(*)) AS percent_negative
+           FROM comments
+           WHERE is_reply = 0
+           AND created_time > '2015-01-01'
+           ")
+
+```
+*In this sample, 45.34767% comments on legislators' posts are negative.*
+
+2. How much variation is there in the level of negativity that legislators see on their Facebook pages? Which are the legislators with the highest and lowest proportion of negative comments?
+
+```{r, message = FALSE}
+# c.created_time between '2015-01-01' and '2016-12-31'
+congress_neg <- dbGetQuery(db,
+           "SELECT p.from_name, (100.00 * SUM(CASE WHEN senti_type = 'negative'
+           THEN 1 ELSE 0 END)/ COUNT(*)) AS negative_prop
+           FROM comments AS c JOIN posts AS p
+           ON c.post_id = p.id
+           WHERE is_reply = 0
+           AND c.created_time > '2015-01-01'
+           GROUP BY p.from_name
+           ORDER BY negative_prop
+           ")
+congress_neg[1, ]
+congress_neg[nrow(congress_neg), ]
+library(ggplot2)
+ggplot(congress_neg, aes(1, negative_prop)) +
+         geom_boxplot(fill='cornsilk',colour='grey60') + 
+         scale_x_continuous(breaks = NULL) +
+         ylab(label = 'Negativity On Facebook Page') +
+         theme(axis.title.x = element_blank()) +
+         theme_bw()
+
+```
+
+
+*The variation of negativity that legislators see on their Facebook Pages are shown in the Box Plot. ****Senator Kelly Ayotte*** *was the legislator with the highest negativity. In the contrast,****Gregorio Kilili Camacho Sablan*** *was the legislator with least negativity on the Facebook at the same time.*
+
+3. How did negativity evolve over time during the period of analysis? Do you identify any particular days or periods during which negativity spiked? Can you explain why?
+
+```{r, message = FALSE}
+#Here we consider all kinds of comments on Facebook
+neg_time <- dbGetQuery(db,
+           "SELECT created_time, 
+           message,
+           (100.00 * SUM(CASE WHEN senti_type = 'negative'
+           THEN 1 ELSE 0 END)/ COUNT(*)) AS negative_prop
+           FROM comments 
+           WHERE created_time between '2015-01-01' and '2016-12-31'
+           GROUP BY created_time")
+library(lubridate)
+ggplot(neg_time, aes(x = (as.Date(created_time)), 
+                     y = negative_prop)) + 
+                 geom_line() + 
+                 labs(x = "", y = "Negativity On Facebook Pages") 
+```
+```{r, message = FALSE}
+##------Text Analysis-----
+sort_df <- neg_time[order(-neg_time$negative_prop), ]
+sort_df[1, c(1, 3)]#highest negativity
+text_df <- dbGetQuery(db,
+                      "SELECT message
+                      FROM comments
+                      WHERE created_time = '2015-12-07'
+                      AND senti_type = 'negative'")
+library("tm")
+library("SnowballC")
+library("wordcloud")
+library("RColorBrewer")
+library("NLP")
+
+text_df <- as.character(text_df)
+docs <- Corpus(VectorSource(text_df))
+#inspect(docs)
+# Convert the text to lower case
+docs <- tm_map(docs, content_transformer(tolower))
+# Remove numbers
+docs <- tm_map(docs, removeNumbers)
+# Remove english common stopwords and own designed words
+docs <- tm_map(docs, removeWords, stopwords("english"))
+docs <- tm_map(docs, removeWords, c("sllloooowwwww","ndaa","wtf", 
+                                    "mmmmmohmygawwddd", "ajajajajajajajajakajaajajajajajajajaja",
+                                    "aaaaaahwweeeeewwwwwe", "fucking", "can", 
+                                    "one", "just", "even", "still")) 
+# Remove punctuations
+docs <- tm_map(docs, removePunctuation)
+# Eliminate extra white spaces
+docs <- tm_map(docs, stripWhitespace)
+dtm <- TermDocumentMatrix(docs)
+m <- as.matrix(dtm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+set.seed(1234)
+wordcloud(words = d$word, freq = d$freq, min.freq = 1,
+          max.words=170, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+
+*From the time series figure, we know that generally, the negativity of facebook comments remained at a relatively high level, average of which is about 50%. We can see that the negativity fluctuated significantly from 2015-11 to 2016-01 and on ****2015-12-07****,* *the negativity of facebook comments achieved the ****highest point****, which is 68.7%.*
+
+*Negativity is defiend as the proportion of negative comments on all comments that each legislator got on their facebook pages. From the worldcloud we know that the most mentioned words of facebook users on December 7th 2015 are ****National Rifile Association(NRA)****, ****people****, ****Americans****, ****guns(gun)****, ****shame****, ****terrorists****. It is not difficult to associate these with the news released on that day, when Donald Trump, who was also the US President candidate at that time, proposed banning all Muslims from entering the US. The proposed anti-Muslim policy was raised as a result of the San Bernardino shooting attack, which had happened 5 days ago. It was regarded as an Islamic Terrorist Attack consisting of a mass shooting and an attempted bombing at the Inland Regional Center in San Bernardino, California. According to the FBI's investigation, the perpetrators were "homegrown violent extremists" inspired by foreign terrorist groups. They have traveled to Saudi Arabia in the years before the attack. In addition, a large stockpile of weapons, ammunition, and bomb-making equipment had been amassed in their home. The attack was the deadliest mass shooting in the U.S. since the 2012 Sandy Hook Elementary School shooting, and the deadliest terrorist attack to occur in the U.S. since the September 11 attacks.*
+
+*Actually, the negativity represents US citizens’ support for Trump’s proposed policy. The negativity boomed for the opposition to the current president Obama at that time, whose gesture in reaching out to the Muslim world was unprecedented for a U.S. president. When he was at stage, several open policies were issued. Although Obama regarded it as a necessary step for engaging the Muslim world and created friendship with the United States, most Americans citizens and other politicians didn’t rate him at all or even became shameful for this. The strained relations between US and Muslim went worse. As a result, not only a lot of Americans chose to denounce Muslims (even American Muslims), and regarded them as the source of terrorism, they also want a new president for themselves.*
+
+*Another root cause for such an extreme negativity is gun violence. The United States has had the most mass shooting out of any country on earth. Therefore, many citizens expected that government could control the ownership of gun. NRA, a gun rights advocacy group based in the United States, was also thought as responsible for the shooting attack. Many users on facebook copy and paste ****"Siding with the NRA instead of your constituents and the vast majority of Americans is a losing proposition"*** *to express their anger.*
+
+4. Are there any other variables in the dataset that could help you measure negativity? If so, do you find similar results to questions 2 and 3 when you use that other signal?
+
+*We can use the proportion of negative reactions(sad_count and angry_count) in all non-negative reactions(including likes_count, love_count, haha_count, wow_count) to measure the negativity each legislator would see on their facebook pages. If the proportion is above 1, then we regard the post could enage negative emotion among facebook users.*
+
+```{r}
+negativitydf <- dbGetQuery(db,
+           "SELECT from_name,
+           (100.00 * SUM(sad_count + angry_count)/
+           SUM(love_count + haha_count + wow_count + 
+           likes_count)) AS negativity
+           FROM posts
+           GROUP BY from_name
+           ORDER BY negativity")
+tail(negativitydf)
+head(negativitydf)
+nrow(negativitydf[negativitydf == 0, ])
+
+negativitydate <- dbGetQuery(db,
+           "SELECT created_time,
+           (100.00 * SUM(sad_count + angry_count)/
+           SUM(love_count + haha_count + wow_count + 
+           likes_count)) AS negativity
+           FROM posts
+           GROUP BY created_time
+           ORDER BY negativity")
+
+ggplot(negativitydate, aes(x = (as.Date(created_time)), 
+                     y = negativity)) + 
+                 geom_line() + 
+                 labs(x = "", y = "Negativity On Facebook Pages") 
+
+```
+
+
+*The variables represent various reactions to posts are helpful in predicting negativity. However, we do not get similar results as those from sentiment analysis. In this case, ****Congressman Alcee L.Hastings*** *was the legislator who is most easily to gain negative comments on the facebook pages. In addition, we also find that there are 10 legislators got 0 negativity.*
+*When considering the variation of negativity overtime, a really different pattern was found that before 2016-03, nearly all posts got 0 negativity score. This is due to the function of ****Reaction Button*** *was officially launched on 2016-02-24 to all users. Before this perioid, the function was just tested in some regions.*
+*However, from this figure, we could clearly see that the negativity was increased over time with accelerated speed. Actually, this is also a strong evidence to show that there is so much negativity on Facebook comments about politics. In my point of view, the newly luanched reaction buttons established an alternative channel/opened a new window for users to easily complain about politics. Facebook users would like to not only write down their comments, but also give a sad or angry button before they leave the page.*
+*Therefore, if we have more up-to-date dataset, both sentiment analysis and this innovatie measurement scheme are very likely to converge to a similar pattern on revealing negativity of comments.*
+

@@ -1,0 +1,138 @@
+---
+title: "MY472 Final Exam Part C: Scraping additional data"
+---
+
+Now you will collect additional data to continue exploring the broader research question in the exam.
+
+1. The website [EveryPolitician](https://everypolitician.org/) contains information on legislators around the world. Using the webscraping tools you learned in the course, create a dataset with two variables -- `bioguide_id` and `age` -- by scraping the data available in these two pages: https://everypolitician.org/united-states-of-america/house/term-table/114.html and https://everypolitician.org/united-states-of-america/senate/term-table/114.html
+
+If you are having trouble scraping it, you can also just click on "Download data" (but you will not get full mark if you do that!)
+
+```{r, message = FALSE}
+library("rvest")
+library(xml2)
+library(DBI)
+db <- dbConnect(RSQLite::SQLite(), "USfacebook.sqlite")
+url1 <- "https://everypolitician.org/united-states-of-america/house/term-table/114.html"
+html1 <- read_html(url1)
+
+##---Webscraping bioguide and born date of Senate ---
+
+sbio <- html_nodes(html1, xpath = '//div[@class="person-card__section person-card__section--identifiers"]') %>%
+ html_text()
+
+sborn <- html_nodes(html1, xpath = '//div[@class="person-card__section person-card__section--bio"]') %>%
+ html_text()
+senatedf <- data.frame ("bioguide_id" = sbio, "B/D" = sborn)
+senatedf$bioguide_id <- stringr::str_extract(senatedf$bioguide_id, pattern = "[A-Z]+[0-9]+")
+senatedf$B.D <- stringr::str_extract(senatedf$B.D, pattern = "[0-9]+[-]+[0-9]+[-]+[0-9]+")
+
+congress_list <- dbGetQuery(db,
+           "SELECT * 
+           FROM uscongress")
+full_congress_list <- merge(x = congress_list, y = senatedf, by = "bioguide_id", all.x = TRUE )
+full_congress_list$B.D <- stringr::str_extract(full_congress_list$B.D, pattern = "[0-9]+")
+full_congress_list$B.D <- as.numeric(full_congress_list$B.D)
+#define a function to calculate age
+findage <- function(x){
+  2016 - x
+}
+full_congress_list$age <- sapply(full_congress_list$B.D, findage,simplify = TRUE, USE.NAMES = TRUE)
+
+```
+
+2. Are there more negative comments on the pages of younger politicians? Use any statistical or graphical methods that you consider appropriate to answer this question.
+
+```{r, message = FALSE}
+
+congress_neg <- dbGetQuery(db,
+           "SELECT p.from_name, p.filename,
+           (100.00 * SUM(CASE WHEN senti_type = 'negative'
+           THEN 1 ELSE 0 END)/ COUNT(*)) AS negative_prop
+           FROM comments AS c JOIN posts AS p
+           ON c.post_id = p.id
+           WHERE is_reply = 0
+           AND c.created_time > '2015-01-01'
+           GROUP BY p.from_name
+           ORDER BY negative_prop
+           ")
+colnames(full_congress_list)[5] <- "filename"
+legislator_df<- merge(x = full_congress_list, y = congress_neg, by = 'filename', all.x = TRUE)
+library(ggplot2)
+library(ggthemes)
+library(dbplyr)
+age_negative <- na.omit(legislator_df[ ,c("age", "negative_prop")])
+
+#summary(age_negative)
+#we know the age of the congress ranges from 32 to 87
+#Group age into age_group 
+age_range <- c(paste(seq(30, 90, by = 5), seq(30 + 5 - 1, 95 - 1, by = 5),
+                sep = "-"), paste(95, "+", sep = ""))
+age_negative$age_group <- cut(age_negative$age, breaks = c(seq(30, 95, by = 5), Inf), 
+                              labels = age_range, right = FALSE)
+age_aggregate_mean <- aggregate(age_negative[, c("negative_prop")], 
+                                by = list(age_negative$age_group), FUN = mean)
+names(age_aggregate_mean)[1] <- "age_range"
+names(age_aggregate_mean)[2] <- "negativity_prop"
+
+ggplot(age_aggregate_mean, aes(x = age_range, y = negativity_prop)) +
+      geom_bar(stat = "identity", fill = "#E69F00", width = 0.5) +
+      labs(x = "Age Range", 
+          y = "Negativity On Facebook (%)",
+          title = "Younger Politicians Seem to Get More Negative Comments on Their Facebook Pages") +
+      scale_y_continuous(breaks = seq(20, 60, 10)) +
+      theme(plot.title = element_text(size = 3.5, face = "bold",
+                                      margin = margin(10, 0, 10, 0))) +
+                           theme_bw()
+
+#average negativity for politicans aged in 30 - 54
+am1<- mean(age_aggregate_mean$negativity_prop[1:5])
+#average negativity for politicans aged in 55 - 70
+am2 <- mean(age_aggregate_mean$negativity_prop[6:8])
+#average negativity for politicans aged in 75 - 89
+am3 <- mean(age_aggregate_mean$negativity_prop[9:12])
+age_table <- data.frame(c("30-54", "55-70", "75-98"), c(am1, am2, am3))
+names(age_table)[1] <- "Age Group"
+names(age_table)[2] <- "Negativity Percentage"
+age_table
+
+```
+
+
+*We group the politicians into age groups. From the bar chart, it seems that younger politicians will get more negative comments than the older. To get a more concrete analysis, I aggregate the age range into three groups from younger to older. In detail, the youngest politicians (30-54) got an average 39.84% negativity and the younger politicians (55-70) got an average 41.09% negativity. Compared with those two groups, the older group gained a relatively low percent of negativity, 35.47%.*
+
+3. The file `congress-list.csv` contained five other legislator-level variables (chamber, gender, party, ideology, state). Choose TWO of these variables and explore whether they are related with the extent to which Members of Congress receive negative comments on their Facebook pages. Write a summary of your findings.
+
+
+```{r, message = FALSE}
+#We choose gender and party to explore their relationship with the extent of received negative comments
+
+gender_negative <- na.omit(legislator_df[ ,c("gender", "party", "negative_prop")])
+new_aggregate_mean <- aggregate(gender_negative[, 3], 
+                                list(gender_negative$gender, gender_negative$party), 
+                                mean)
+
+ggplot(new_aggregate_mean, aes(x = new_aggregate_mean$Group.2, 
+                          y = new_aggregate_mean$x, 
+                          fill = new_aggregate_mean$Group.1)) +
+      geom_bar(stat = "identity", position = "dodge", width = 0.5, alpha = 0.8) +
+      labs(x = "Party of U.S. Congress",
+           y = "Negativity On Facebook (%)",
+           fill = "") + 
+      scale_fill_manual(new_aggregate_mean$Group.1,
+                        values = c("#52854C", "#4E84C4")) +
+      theme(legend.title = element_blank()) +
+                           theme_bw()
+
+names(new_aggregate_mean)[1] <- "Gender"
+names(new_aggregate_mean)[2] <- "Party"
+names(new_aggregate_mean)[3] <- "Negative Percentage"
+#statistics summary for gender, party and negative percentage of comments
+new_aggregate_mean
+#how many females and males have sentiment analysis of comments on their facebook pages
+table(gender_negative$gender)
+```
+
+
+*We explore the relationship between gender/party and negative comments proportion.In part A, we know that there are 532 legislators in our sample, but only 470 of them have negativity information, of which 95 are female, and 375 are male. Considering the unfairly distributed of gender among the sample, it is not resonable to simply compare negative percentage of facebook comments and gender itself. However, when we combine it with departiment, it is surprised to find that ****gender is not the factor affecting legislator from Democratic or Republican party to gain more or less negative comments.*** *In our sample, there is no female from Independent Party.*
+*It is also obviously to observe that legislators from Republican party are more easily to be negatively commented. The propability of legislators from Democratic or Independent party getting negative facebook comments are nearly same.*
