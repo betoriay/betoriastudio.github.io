@@ -1,0 +1,877 @@
+---
+title: "poorsql"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Firstly, let's come to data cleaning!
+```{r}
+#--------read raw clean outside UK data and non-english tweets---------
+rawdata <- read.csv("my459df.csv", stringsAsFactors = FALSE) # 108,540 rows
+rawdata <- rawdata[, -1]
+rawdata <- unique(rawdata) # 0nly 107,274 rows
+#
+library(DBI)
+db <- dbConnect(RSQLite::SQLite(), "my459.sqlite")
+#
+#dbWriteTable(db, "country", ct, overwrite = TRUE)
+#dbListTables(db)
+```
+
+Read bots detecting results into R. This is get through python.
+```{r}
+#-------Here comes to the data cleaning process.Firstly, let's discuss the bots in COVID-19 related account-----
+botometer1 <- read.csv("botometer.csv", stringsAsFactors = F)
+botometer2 <- read.csv("botometer2.csv", stringsAsFactors = F)
+botometer3 <- read.csv("botometer3.csv", stringsAsFactors  = F)
+botometer4 <- read.csv("botometer4.csv", stringsAsFactors  = F)
+botometer5 <- read.csv("botometer5.csv", stringsAsFactors  = F)
+botometer <- rbind(botometer1, botometer2, botometer3, botometer4, botometer5)
+#summary(botometer)
+```
+
+According to paper showing the distributino of bot scores for covid-related tweets post accounts, we choose a threshold at 0.55, at which the account age is relativly younger than the average, higher contents of tweets are related to COVID-19. We only focus on english score here. 
+
+```{r}
+botometer$bot <- ifelse(botometer[,2] > 0.55, "bot", "human")
+nrow(botometer[botometer$bot == "bot",])
+
+bot_like <- botometer[botometer$bot == "bot",]
+summary(bot_like) #265 bot accounts
+```
+
+in 2504 tweets, 48 are detected as bot, only 2.9%, which is heavily lower than the general level.
+in 2000 tweets, 1724 have authorized and 51 are detected as bot.
+
+```{r}
+rm_name <- bot_like$names #extract names for the bot accounts
+head(rm_name)
+```
+According to the bot-score, let's assign each tweets with "bot" or "human".
+```{r}
+rawdata$label <- ifelse(rawdata$screen_name %in% rm_name, "bot", "human")
+ ## only"Lrighelli" is wrongly assinged for unclear reason
+ ## delet screen_name == "Lrighelli"
+which(rawdata$screen_name == "Lrighelli")
+which(rawdata$screen_name == "nealysart")
+non_botdf <- rawdata[rawdata$label == "human",] #non-bots accounts data frame
+```
+
+```{r}
+ ##Tweets Frequncy in UK with bot
+#botdf <- rawdata[rawdata$label == "bot",]
+#sort(table(botdf$screen_name), decreasing = T)
+```
+
+# Now we do some description analysis to our corpus!
+1. What is the distribution for our tweets in the sample?
+```{r}
+#write the df as a tabl into sqlite
+library(DBI)
+db <- dbConnect(RSQLite::SQLite(), "my459.sqlite")
+
+#dbWriteTable(db, "corpus", non_botdf, overwrite = TRUE)
+#dbListTables(db)
+
+#How many tweets we collected for each day
+datedf <- dbGetQuery(db,
+           "SELECT created_at, COUNT(*) AS tweets_number
+           FROM corpus 
+           GROUP BY created_at")
+datedf
+```
+We show it in graph.
+```{r}
+library(ggplot2)
+library(lubridate)
+p1 <- ggplot(datedf, aes(x = (as.Date(created_at)), y = tweets_number)) +
+  geom_bar(fill = "pink1", stat = "identity", width = 0.7) +
+  geom_text(aes(label = tweets_number), vjust = -0.25, size = 1.5) +
+  labs(x = "", y = "Numer of Daily Twitter")+
+  scale_x_date(date_breaks = "7 day",
+               expand = c(0, 0),
+               date_labels = "%b %e") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 5000))+
+  theme_classic() +
+  theme(panel.grid = element_blank()) 
+p1 
+
+#plot.title = element_text(hjust = 0.5, lineheight = 5)
+#  ggtitle("Number of Daily COVID-19 Tweets from March to April")+
+```
+
+```{r}
+#How many tweets in total and how many users in our sample
+nrow(non_botdf)
+length(unique(non_botdf$screen_name))
+```
+
+Other Cleaning Before Discription -- Pre-processing
+```{r}
+library(textclean)
+library(stringr)
+
+non_botdf$text <- str_replace_all(non_botdf$text, "[\r\n]" , "") #remove \n in tweets
+non_botdf$text <- replace_emoji(non_botdf$text) #replace_emoji
+non_botdf$text <- str_replace_all(non_botdf$text, '<[A-Za-z0-9_]+>', '') 
+
+```
+
+Some basic features of our corpus.
+1. geogrphical distribution approxiamtely
+```{r}
+library(RColorBrewer)
+df1 <- dbGetQuery(db, "SELECT * FROM corpus")
+length(grep('Scotland', df1$place_full_name))
+length(grep('Wales', df1$place_full_name)) 
+length(grep('Northern Ireland', df1$place_full_name)) 
+length(grep('England', df1$place_full_name)) 
+length(grep('London', df1$place_full_name)) 
+df2 <- data.frame(c("England",'Scotland', 'Wales', 'Northern Ireland'), c(88720, 9311, 5126, 3219))
+names(df2) <- c("GEO", "Amount")
+pct <- round(df2$Amount/sum(df2$Amount)*100)
+lbls <- paste(df2$GEO, pct)
+lbs <- paste(lbls, "%", sep = "")
+pie(df2$Amount, 
+    labels = lbs, 
+    col = brewer.pal(4, "Accent"),
+    main = "Pie Chart of Tweets Location Distribution")
+
+```
+
+2. Length of tweets
+
+```{r}
+library(quanteda)
+twcorpus <- corpus(non_botdf, text_field = "text")
+summary(twcorpus, n = 10)
+```
+
+```{r}
+#Length of tweets
+tweetslength <- as.data.frame(ntoken(twcorpus))
+names(tweetslength) <- "length"
+#summary(tweetslength)
+l1 <- data.frame(non_botdf$created_at, tweetslength$length)
+names(l1) <- c("time", "length")
+#dbWriteTable(db, "length", l1, overwrite = TRUE)
+dbGetQuery(db, "SELECT time, AVG(length) AS average_len 
+           From length
+           GROUP BY time")
+```
+
+```{r}
+summary(l1$length)
+```
+
+3. Most frequently mentioned account.
+```{r}
+#library(stringr)
+length(grep('@', non_botdf$text))
+mentionat <- str_extract_all(non_botdf$text, '@[A-Za-z0-9_]+')
+head(sort(table(unlist(mentionat)), decreasing = T), n = 30)
+```
+
+```{r}
+set.seed(456)
+#library(RColorBrewer)
+#library(wordcloud)
+df_mention <- sort(table(unlist(mentionat)), decreasing = T)
+df_mention <- as.data.frame(df_mention)
+wordcloud(words = df_mention$Var1, freq = df_mention$Freq, min.freq = 3,
+          max.words = 100, random.order = FALSE, rot.per = 0.5,
+          scale = c(3.5, 0.35),
+          colors = brewer.pal(6, "Accent"))
+```
+
+Let's explore a little bit. What do people mention Boris Johnson, NHSuk/NHS, WHO, realDonaldTrum, and WHO.
+```{r}
+BJtweets <- non_botdf[grep('@BorisJohnson', non_botdf$text),]
+NHStweets <- non_botdf[grep('@NHS*', non_botdf$text),]#NHSuk, NHSEngland
+DTtweets <- non_botdf[grep('@realDonaldTrump', non_botdf$text),]
+WHOtweets <- non_botdf[grep('@WHO', non_botdf$text),]
+table(DTtweets$created_at)
+```
+
+4. Most frequently mentioned hashtags
+Here we need to know that due to tweets are all related to covid-19, therefore, the hashtags are related to this topic.
+What topics do the original user used to retrieve tweets? Why more or are they same?
+We can observe two things here:
+a. What hashtags do people like to use for discuss this pandemic.
+b. What are the most concerned topics cared by public? If we do not want to aggregate on each period, we should notice when is the first time people used it and when is the time corresponding policy is announced! E.g. stayathome might occur before official announcement.
+```{r}
+top_hashtags <- function(text){
+  hashtags <- str_extract_all(text, '#[A-Za-z0-9_]+')
+  return(
+    head(sort(table(unlist(hashtags)), decreasing = TRUE), n=150)
+    )
+}
+top_hashtags(non_botdf$text)
+# #lockdown; #StayAtHome; #NHS; #StayHomSaveLives; #StayAtHome;#BorisJohnson; #WeStandWithItaly;#SocialDistanding;#mentalhealth
+
+df_hashtag <- sort(top_hashtags(non_botdf$text), decdecreasing = TRUE)
+df_hashtag <- as.data.frame(df_hashtag)
+search_hashtags <- c("#coronavirus", "#coronavirusoutbreak", "#Coronavirus","	#CoronaVirus",
+                     "#coronavirusPandemic", "#covid19", "#covid_19", "#Covid19","#COVID19",
+                     "#Covid_19","#stayHomeStaySafe","#CoronavirusPandemic",
+                     "#epitwitter", "#ihavecorona", "#StayHomeStaySafe", "#TestTraceIsolate")
+#remove searching keywords
+df_hashtag <- df_hashtag[!df_hashtag$Var1 %in% search_hashtags,]
+#drawing word clouds for most frequently hashtags.
+wordcloud(words = df_hashtag$Var1, freq = df_hashtag$Freq, min.freq = 140,
+          max.words = 100, random.order = FALSE, rot.per = 0.4,
+          scale = c(3.5, 0.35),
+          colors = brewer.pal(6, "Paired"))
+```
+
+
+
+
+```{r}
+#group_df <- non_botdf
+#group_df$created_at <- as.factor(group_df$created_at)
+#twcorpus2 <- corpus(group_df, text_field = "text", groups = "created_at")
+#summary(twcorpus2, n = 10)
+```
+
+## Let's try Vader First
+```{r}
+install.packages("vader")
+#https://cran.r-project.org/web/packages/vader/index.html
+```
+Here are some basic trails for the package!
+```{r}
+library(vader)
+get_vader("I yesn't like it")
+get_vader("I yesn't like it", incl_nt = FALSE)
+get_vader("I yesn't like it", neu_set = FALSE)
+
+```
+
+```{r}
+vader_df(c("I'm happy", "I'm yesn't happy"))
+vader_df(c("I'm happy", "I'm yesn't happy"), incl_nt = FALSE)
+vader_df(c("I'm happy", "I'm yesn't happy"), neu_set = FALSE)
+va
+```
+
+```{r}
+v1 <- dbGetQuery(db, "SELECT text from corpus LIMIT 10")
+#remove URL and @ and hashtags for sentiment anlaysis
+v2 <- str_replace_all(v1$text, '@[A-Za-z0-9_]+', "") #remove mentioned accounts
+v3 <- str_replace_all(v2, '#[A-Za-z0-9]+', "") #remove hashtags
+v4 <- str_replace_all(v3, 'http\\S+\\s*',"") #remove url
+v4 <- str_replace_all(v4, "[[:space:]]*$","") #remove tailing whitespaces
+v4 <- str_replace_all(v4, ' +', ' ') #remove extra whitespaces
+v4 <- gsub("^[[:space:]]*","",v4) #remove heading whitespaces
+v4
+```
+
+### Let's apply Vader for the corpus
+```{r}
+library(stringr)
+#remove URL and @ and hashtags for sentiment anlaysis
+vd1 <- str_replace_all(df1$text, '@[A-Za-z0-9_]+', "") #remove mentioned accounts
+vd2 <- str_replace_all(vd1, '#[A-Za-z0-9]+', "") #remove hashtags
+vd3 <- str_replace_all(vd2, 'http\\S+\\s*',"") #remove url
+vd4 <- str_replace_all(vd3, "[[:space:]]*$","") #remove tailing whitespaces
+vd4 <- str_replace_all(vd4, ' +', ' ') #remove extra whitespaces
+vd4 <- gsub("^[[:space:]]*","",vd4) #remove heading whitespaces
+#vd4 <- as.data.frame(vd4) #clean text with same sequence for df1
+vd4
+df1$vadertext <- vd4
+write.csv(df1, file = "vaderdf.csv")
+```
+
+```{r}
+#vader_df(v4, incl_nt = F, neu_set = F) 
+```
+If we run the package in R, we will get -- Error in object[[name, exact = TRUE]] : subscript out of bounds. Therefore we turn to Jupyter Notebook to adopt the counterparty in Python. The results are saved into "vaderscores.csv"
+
+```{r}
+#import vader result from python outcomes
+vaderscores <- read.csv("vaderscores.csv",stringsAsFactors = FALSE)
+#vaderscores$created_at <- as.character(vaderscores$created_at)
+#vaderscores$type <- as.factor(vaderscores$type)
+dbWriteTable(db, "vader", vaderscores, overwrite = TRUE)
+#[-1, -0.05):negative, [-0.05, 0.05]: netrual, (0.05, 1]:positive
+```
+
+1. Let's see generally, how many positive, negative and neutral tweets are there in our dataset.
+```{r}
+df1$vadercompound <- vaderscores$compound
+vaderscores$type <- "netrual"
+vaderscores$type[vaderscores$compound <= -0.05] <- "negative" 
+vaderscores$type[vaderscores$compound >= 0.05] <- "positive" 
+table(vaderscores$type)
+```
+
+2. Now, aggregate *compound score* on daily level
+```{r}
+avg_df <- dbGetQuery(db, 
+                     "SELECT created_at, AVG(compound) AS score
+                     FROM vader
+                     GROUP BY created_at")
+avg_df
+```
+
+Now let us try smoothing methods, a moving average,averages values from a window of consecutive time periods,here seven suggested by Blake, thereby generating a series of averages. 
+
+```{r}
+library(tidyverse)      # data manipulation and visualization
+library(lubridate)      # easily work with dates and times
+#install.packages("fpp2")
+library(fpp2)           # working with time series data
+library(zoo)            # working with time series data
+```
+
+```{r}
+#To compute moving averages on our data we can leverage the rollmean function from the zoo package.
+#vaderscores$created_at <- as.Date(vaderscores$created_at)
+avg_df$created_at <- as.Date(avg_df$created_at)
+
+average_score <- rollmean(avg_df$score, k = 7, na.pad = TRUE, align = "right")
+avg_df$average <- average_score
+avg_df
+```
+The Compound score is a metric that calculates the sum of all the lexicon ratings which have been normalized between -1(most extreme negative) and +1 (most extreme positive).
+
+```{r}
+#Here is the code just for chekcing the feautres obtained in the dataset
+#dbGetQuery(db, "SELECT * FROM vader LIMIT 1")
+```
+
+Therefore, let's just plot the score for each day to see the overall trends
+```{r}
+
+ggplot(avg_df, aes(x = as.Date(created_at), y = score)) +
+  geom_line(color ="#456355") +
+  geom_point(color = "#FCD16B") +
+  geom_text(label = substr(avg_df$created_at, 6, 10) ,size=2.5) +
+  scale_x_date(date_breaks = "5 day",  date_labels = "%b %d") +
+  labs(x = "", y = "Daily Overall Sentiment Score") +
+  theme_classic()
+```
+
+
+3. Each day, how many negative, netrual and positive tweets in our sample?
+```{r}
+g3 <- dbGetQuery(db, "SELECT created_at, type, COUNT(*) AS number
+           FROM vader GROUP BY created_at, type")
+g3 #describe the counts for each type for each day
+```
+
+```{r}
+library(ggplot2)
+library(lubridate)
+library(wesanderson)
+```
+
+Show distribution on daily ratios.
+```{r}
+summary(g3)
+senticols <- c(positive = "#C7CEF6", negative="#E6A2C5",  netrual = "#7496D2")
+ggplot(g3) +
+  geom_col(aes(x = as.Date(created_at), y = number, fill = type), position = "fill") +
+  scale_x_date(date_breaks = "7 day",
+               expand = c(0, 0),
+               date_labels = "%b %e") +
+  labs(x = "", y = "Daily Sentiment Ratio") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_classic() +
+  theme(panel.grid = element_blank()) +
+  scale_fill_manual(values = senticols, name = "Sentiment Type")
+  
+```
+Findings:
+1) Everyday, there are negative, netural and positive tweets with different proportions.
+2) However, generally, positive tweets are dominant emotions on tweets.
+3) 
+
+```{r}
+ggplot(g3) +
+  geom_col(aes(x = as.Date(created_at), y = number, fill = type)) +
+  scale_x_date(date_breaks = "7 day",
+               expand = c(0, 0),
+               date_labels = "%b %e") +
+  labs(x = "", y = "Daily Sentiment Distribution") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(panel.grid = element_blank()) +
+  scale_fill_manual(values = senticols, name = "Sentiment Type") + theme_classic()
+
+```
+
+4. Which day, people have the highest number of negative tweets (we consider proportion)
+```{r}
+#dbWriteTable(db, "sentimentcount", g3)
+g4 <- dbGetQuery(db, "SELECT created_at, SUM(number) AS total
+                 FROM sentimentcount 
+                 GROUP BY created_at")
+negativetb <- g3[g3$type == "negative", ]
+g5 <- merge(g4, negativetb)[,-3]
+g5$pro <- g5$number/g5$total
+g5[order(-g5$pro),]
+```
+
+5. We then see the sentiment score for each day!!
+```{r}
+#daily average neg, pos, neu score proportion
+g1 <- dbGetQuery(db, 
+           "SELECT created_at, AVG(neg), AVG(neu), AVG(pos) 
+           FROM vader
+           GROUP BY created_at")
+names(g1) <- c("date", "neg", "neu", "pos")
+g1
+```
+
+Actually, we just want to see the changes in negative and positive, therefore we show the negative score only here. They are th proportion of negative sentiment score for each day.  
+```{r}
+library(data.table)
+#reshape the data from wide into long term
+g2 <- melt(g1, id = 'date')  
+names(g2) <- c("date", "type", "score")
+# extract negative sentiment
+negscore <- g2[g2$type == "neg",]
+summary(negscore) #the range of score is from 0.057 to 0.128, we can rerange it into 0-5
+
+row.names(negscore) <- substr(negscore$date, 6, 10)
+pp1<- ggplot(negscore, aes(x = as.Date(date), y = score)) +
+  geom_line(color = "#E6A2C5") +
+  geom_point(color = "#76A08A") +
+  geom_text(label = row.names(negscore),size=2.5) +
+  scale_x_date(date_breaks = "5 day",  date_labels = "%b %d") + ##expand = c(0, 0.05),
+  labs(x = "", y = "Daily Negative Sentiment Score") +
+  #scale_y_continuous(expand = c(0.05, 0), limits=c(0,0.15)) +
+  theme_classic() +
+  geom_hline(yintercept = mean(negscore$score), color = "#D8A49B", linetype = 3)
+pp1
+
+```
+
+```{r}
+pp2 <- ggplot(g5, aes(x = as.Date(created_at), y = pro)) +
+  geom_line(color = "#B62A3D") +
+  geom_point(color = "#EDCB64") +
+  geom_text(label = row.names(negscore),size=2.5) +
+  scale_x_date(date_breaks = "5 day",  date_labels = "%b %d") + ##expand = c(0, 0.05),
+  labs(x = "", y = "Daily Negative Tweets Account (% in total)") +
+  #scale_y_continuous(expand = c(0.05, 0), limits=c(0,0.15)) +
+  theme_classic() +
+  geom_hline(yintercept = mean(g5$pro), color = "#A35E60", linetype = 3)
+pp2
+```
+
+
+Now, let's calculate how many days are above the average sentiment 
+```{r}
+#avrage score
+ngmeanavg <- mean(negscore$score)
+sum(negscore$score > ngmeanavg)
+```
+
+https://en.wikipedia.org/wiki/Timeline_of_the_COVID-19_pandemic_in_the_United_Kingdom
+What happend on *March 5th*?
+The first death from coronavirus in the UK is confirmed,[33] as the number of cases exceeds 100, with a total of 115 having tested positive. England's Chief Medical Officer, Chris Whitty, tells MPs that the UK has now moved to the second stage of dealing with COVID-19 – from "containment" to the "delay" phase.[34]
+
+What happend on *March 7th*
+The number of cases rises to over 200
+
+What happend on *March 9th*
+The FTSE 100 plunges by more than 8 percent, its largest intraday fall since 2008, amid concerns over the spread of COVID-19.[38]
+The Foreign and Commonwealth Office advises against all but essential travel to Italy due to the COVID-19 outbreak in the country and the nationwide lockdown.[39]
+The first three cases are discovered in Dorset.[40]
+
+What happend on *March 10th*
+10 March – Health minister Nadine Dorries tests positive for coronavirus.[41]
+What happend on *March 12th*
+The UK Chief Medical Officers raise the risk to the UK from moderate to high[49]
+The government advises that anyone with a new continuous cough or a fever should self-isolate for seven days. Schools are asked to cancel trips abroad, and people over 70 and those with pre-existing medical conditions are advised to avoid cruises[50][51]. 政府建议，任何新的持续咳嗽或发烧的人应该自我隔离七天。学校被要求取消出国旅行，并且建议70岁以上的人和那些已有疾病的人避免乘坐游轮
+
+What happend on *March 13th*
+The number of confirmed cases rises by 208 to 798.[56]
+
+What happend on *March 14th*
+The number of confirmed cases rises to 1,140.[64]
+A further 10 people are reported to have died from COVID-19, almost doubling the UK death toll from 11 to 21. The government's aim for a "herd immunity" approach generates controversy.[65][66][67]
+Vice President of the United States, Mike Pence, announces the US is to extend its European coronavirus travel ban to include the UK from 16 March.[68]
+UK retailers release a joint letter asking customers not to panic buy products after some supermarkets sell out of items such as pasta, hand gel and toilet paper.[69]
+
+What happend on *March 15th*
+Health Secretary Matt Hancock says that every UK resident over the age of 70 will be told "within the coming weeks" to self-isolate for "a very long time" to shield them from coronavirus.[72]
+The Foreign and Commonwealth Office advises against all but essential travel to Spain, in view of the escalating COVID-19 outbreak in the country.[70]
+
+*******Start to Peak 2*********
+
+What happend on *March 27th*
+Prime Minister Boris Johnson and Health Secretary Matt Hancock both test positive for COVID-19, Johnson will self-isolate in 10 Downing Street and Hancock is self-isolating at home whilst working.[148][149]
+Chief Medical Adviser Chris Whitty reports suffering from symptoms and is self-isolating, while continuing to advise the UK government.[151]
+
+What happend on *March 29th*
+The government will send a letter to 30 million households warning things will "get worse before they get better" and that tighter restrictions could be implemented if necessary. The letter will also be accompanied by a leaflet setting out the government's lockdown rules along with health information.[159]
+Dr Jenny Harries, England's deputy chief medical officer, suggests it could be six months before life can return to "normal", because social distancing measures will have to be reduced "gradually".[160]
+The first NHS nurse dies of COVID-19.[137]
+
+
+******Start to Peak 3 *********
+What happend on *April 3th*
+NHS Nightingale Hospital London, the first temporary hospital to treat coronavirus patients, opens at the ExCel centre in East London, employing NHS staff and military personnel, with 500 beds and potential capacity for 4,000. It is the first of several such facilities planned across the UK.[176]
+
+What happend on *April 4th*
+The death total is reported as 4,313, having risen by 708 from the previous day's figure.[180]
+It is announced that a five-year-old has died from the virus, believed to be the youngest victim to date.[181]
+
+What happend on *April 5th*
+Queen Elizabeth II makes a rare broadcast to the UK and the wider Commonwealth, something she has done on only four previous occasions. In the address she thanks people for following the government's social distancing rules, pays tribute to key workers, and says the UK "will succeed" in its fight against coronavirus but may have "more still to endure".[183][184]
+Prime Minister Boris Johnson is admitted to hospital for tests after testing positive for coronavirus ten days earlier.[185]
+Matt Hancock says the goal for the number of ventilators has been reduced to 18,000 and that the NHS has between 9,000 and 10,000 available.[186]
+
+******Start to Peak 4 *********
+What happend on *April 11th*
+Queen Elizabeth II makes her first ever Easter message to the nation, in which she states "coronavirus will not overcome us" and that "we need Easter as much as ever."[210]
+After some NHS workers say they still do not have the correct personal protective equipment to treat patients, Home Secretary Priti Patel tells that day's Downing Street briefing she is "sorry if people feel there have been failings" in providing kit.[212]
+The number of people in London hospitals for COVID-19 reaches its peak, according to week-on-week change data; elsewhere in the country, patient numbers continue to increase, although the rate of increase is slowing.[21]
+
+What happend on *April 12th* -- A sudden decrease
+Prime Minister Boris Johnson is discharged from hospital after being treated for coronavirus and will continue his recovery at Chequers.[215]
+The number of people who died in hospital with coronavirus in the UK passes 10,000, after a daily rise of 737 to 10,612. Matt Hancock describes it as a "sombre day".[216]
+The temporary Dragon's Heart Hospital opens at Cardiff's Principality Stadium to admit its first patients.[217]
+
+
+What happend on *April 13th* 
+The number of reported deaths increases by 717 to 11,329.[218]
+Dominic Raab tells the Downing Street briefing the government does not expect to make any immediate changes to the lockdown restrictions and that the UK's plan "is working [but] we are still not past the peak of this virus".[219]
+
+******Start to Peak 4 *********
+What happend on *April 24th* maybe insufficient test
+The website for key workers to book a coronavirus test temporarily closes after a high demand for the tests; 5,000 test kits are ordered within its first two minutes online. The government says it will make more tests available.
+
+What happend on *April 28th* maybe insufficient test
+Matt Hancock announces that care home figures will be included in the daily death toll from the following day; official figures have previously included only hospital data.[294]
+The number of recorded deaths rises by 586 to 21,678.[295]
+Testing capacity reaches 73,000 per day, although only 43,000 were carried out the previous day. Matt Hancock announces that testing will be expanded from the following day to include all care home workers, and people (and their family members) with symptoms who must leave home for their job or are aged over 65.[296]
+At 11am the UK holds a minute's silence to remember key workers who have died from COVID-19.[297]
+The Scottish Government recommends people cover their faces while in some public places such as shops and on public transport.[298]
+
+Just an interesting guess, whether our positive score is also achieving peak at the peak of negative score.
+```{r}
+posscore <- g2[g2$type == "pos",]
+summary(posscore) 
+row.names(posscore) <- posscore$date
+row.names(posscore) <- substr(posscore$date, 6, 10)
+pp3<- ggplot(posscore, aes(x = as.Date(date), y = score)) +
+  geom_line(color = "#C7CEF6") +
+  geom_point(color = "#C4CFD0") +
+  geom_text(label = row.names(posscore),size=2.5) +
+  scale_x_date(date_breaks = "5 day",  date_labels = "%b %d") + ##expand = c(0, 0.05),
+  labs(x = "", y = "Daily Positive Sentiment Score") +
+  #scale_y_continuous(expand = c(0.05, 0), limits=c(0,0.15)) +
+  theme_classic() +
+  geom_hline(yintercept = mean(posscore$score), color = "#CECD7B", linetype = 3)
+pp3
+```
+
+##Let's now turn to NRC with emotion scores
+```{r}
+library(quanteda)
+library(quanteda.dictionaries)
+#Extract the corpus data from sql.lite, a dataframe calle non_botdf 
+mycorpus <- dbGetQuery(db, "SELECT * FROM corpus")
+nrccorpus <- corpus(mycorpus, text_field = "text")
+dfm_nrc <- dfm(nrccorpus, 
+               remove_numbers = TRUE, 
+               remove_punct = TRUE, 
+               remove_symbols = TRUE,
+               remove_url = TRUE,
+               remove_separators = TRUE,
+               remove_twitter = TRUE,
+               remove=stopwords("english"),
+               ngrams = 1,
+               verbose = TRUE)
+dfm_nrc <- dfm_trim(dfm_nrc, min_docfreq = 10, verbose = TRUE)
+NRCtwdfm <- dfm_lookup(dfm_nrc, dictionary = data_dictionary_NRC)
+# each tweets now are have their number of words in each sentiment category
+```
+
+```{r}
+sentidf <- convert(NRCtwdfm, to = "data.frame")
+sentidf <- sentidf[, c(-7,-8)]
+#combine it with date
+sentidf$date <- df1$created_at
+dbWriteTable(db, "emotions", sentidf)
+nrcdf <- dbGetQuery(db, 
+          "SELECT date, SUM(anger), SUM(anticipation), 
+           SUM(disgust), SUM(fear), SUM(joy), 
+           SUM(sadness), SUM(surprise), SUM(trust)
+           FROM emotions
+           GROUP BY date")
+names(nrcdf) <- c("date", "anger", "anticipation", "disgust", "fear", "joy", "sadness", "surprise", "trust")
+
+dbGetQuery(db, "SELECT * FROM length")
+nrclen <- dbGetQuery(db, "SELECT time, SUM(length) FROM length GROUP BY time")
+names(nrclen) <- c("date", "length")
+emotion_df <- merge(nrcdf, nrclen, by = "date")
+emotion_df$anger_ratio <- emotion_df$anger/emotion_df$length
+emotion_df$anti_ratio <- emotion_df$anticipation/emotion_df$length
+emotion_df$disg_ratio <- emotion_df$disgust/emotion_df$length
+emotion_df$fear_ratio <- emotion_df$fear/emotion_df$length
+emotion_df$joy_ratio <- emotion_df$joy/emotion_df$length
+emotion_df$sad_tatio <- emotion_df$sadness/emotion_df$length
+emotion_df$surp_ratio <- emotion_df$surprise/emotion_df$length
+emotion_df$trust_ratio <- emotion_df$trust/emotion_df$length
+names(emotion_df[16]) <- "sad_ratio"
+
+#-------We try to draw the emotional ratios changes in one plot -------
+eightdf <- emotion_df[,c(1, 11:18)]
+names(eightdf) <- c("date", "Anger", "Anticipation", "Disgust", 
+                    "Fear", "Joy", "Sadness", "Surprise", "Trust")
+library("tidyverse")
+melteightdf <- eightdf %>%
+  gather(key = "variable", value = "value", -date)
+head(melteightdf)
+melteightdf$variable <- as.factor(melteightdf$variable)
+names(melteightdf)[2] <- "Emotion"
+ggplot(melteightdf, aes(x = as.Date(date), y = value)) + 
+  geom_line(aes(color = Emotion, linetype = Emotion)) + 
+  scale_color_manual(values = c("#1DACE8", "#1C366B", 
+                                "#F24D29", "#CC8B3C", 
+                                "#F7B0AA", "#A35E60",
+                                "#CECD7B", "#456355")) +
+  scale_x_date(date_breaks = "5 day",  date_labels = "%b %d") +
+  labs(x="", y = "NRC Emotion Ratios for Each Day") +
+  theme_classic()
+
+```
+
+Observation:
+positive emotions always dominant
+Anger is always not a dominant emotion
+Sadness only surplus at the beginnin, but decrease sharply, the level of which is lower than fear.
+Fear and Sadness seems to be parallel with each other
+Trust level increase
+Joy also increase- And one final suggestion: Find moments of levity. Laughter and joy can be among our most valuable tools for building resilience (Bachorowski & Owren, 2001; Mahony et al., 2002; Owren & Amoss, 2014). 
+---------------------------
+Emotion from NRC Official pdf
+1. Anger is from dissatisfaction
+
+I would like to see the negative emotions in detail.Therefore, we amplify Fear, Sadness，and Joy.
+```{r}
+partialdf <- melteightdf$Emotion %in% c("Fear","Joy", "Sadness")
+threemotion <- melteightdf[partialdf,]
+pp6 <- ggplot(threemotion, aes(x = as.Date(date), y = value)) + 
+  geom_line(aes(color = Emotion, linetype = Emotion)) + 
+  geom_text(label = substr(threemotion$date, 6, 10), size=2.5) +
+  scale_color_manual(values = c("#CC8B3C", "#F7B0AA", "#A35E60")) +
+  scale_x_date(date_breaks = "5 day",  date_labels = "%b %d") +
+  labs(x="", y = "Fear, Joy and Sadness Ratios for Each Day") +
+  theme_classic()
+pp6
+```
+
+```{r}
+#create a new dataframe to show stage
+stage <- c("Containment", "Delay", "Start Lockdown", "BorisXCOVID-19", "Peak")
+start <- as.Date(c("2020-03-04", "2020-03-12", "2020-03-23", "2020-03-27", "2020-04-27"))
+end <- as.Date(c("2020-03-12", "2020-03-23","2020-03-27", "2020-04-27", "2020-04-30"))
+stagedf <- data.frame(stage, start, end, stringsAsFactors = FALSE)
+
+#pp7 <- pp6 + geom_vline(data = stagedf, aes(xintercept = as.Date(start)), linetype = "dashed") 
+
+            
+
+ggplot(threemotion) + 
+  scale_x_date(date_breaks = "5 day",  date_labels = "%b %d", expand = c(0,0)) +
+  geom_rect(data = stagedf, 
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = stage), 
+            alpha = 0.4) + 
+  geom_line(aes(x = as.Date(date), y = value,color = Emotion, linetype = Emotion)) +
+  geom_vline(data = stagedf, aes(xintercept = as.Date(start)), linetype = "dashed") + 
+  scale_color_manual(values = c("#CC8B3C", "#F7B0AA", "#A35E60")) +
+  scale_fill_manual(values = c("#DAECED", "#EDCB64", "#C7CEF6", "#C7CEF6", "#C7CEF6"),
+                    name = "Phase of COVID-19",
+                    breaks = c("Containment", "Delay", "Start Lockdown", "BorisXCOVID-19", "Peak"),
+                    labels = c("Containment", "Delay", "Start Lockdown", 
+                               "Lockdown Process", "Lockdwon to Peak")) +
+  geom_text(data = stagedf, aes(label = stage, x = start, y = 0.021),
+            size = 2, angle = 90, nudge_x = 0.4) +
+  labs(x = "", y = "Fear, Joy and Sadness Ratios for Each Day") +
+  theme_classic()
+```
+
+
+## Keyness Analysis
+Let's compare what are the different topics disccussed in positive and negative -- LockDown
+```{r}
+kr <- dbGetQuery(db, "SELECT * FROM corpus")
+kr <- kr[,c(1,2,4)]
+sent <- dbGetQuery(db, "SELECT * FROM vader")
+sent <- sent[,7]
+kr$type <- sent
+#we only want to concentrate on lockdown, therefore, we like to see the date after 2020-03-23
+
+kr <- kr[kr$created_at >= "2020-03-23",]
+
+btmcorpus <- corpus(kr, text_field = "text")
+
+btmdfm <- dfm(btmcorpus,
+                  remove = c(stopwords("english"),"also", "just", 
+                             "well", "can", "one", "many", "two", 
+                             "make", "even", "ever", "thing", "fuck", "coronavirus", "worse"),
+                  remove_punct = TRUE,
+                  remove_twitter = TRUE,
+                  remove_numbers = TRUE,
+                  stem = TRUE,
+                  remove_url = TRUE)
+btmdfm <- btmdfm%>% dfm_select(min_nchar = 2) %>% dfm_trim(min_termfreq = 5)
+
+set.seed(1234)
+tstat_key <- textstat_keyness(btmdfm, 
+                              target = kr$type == "positive")
+
+textplot_keyness(tstat_key, n = 50, 
+                 show_reference = TRUE,
+                 show_legend = FALSE,
+                 color = c("#C7CEF6", "#E6A2C5"), margin = 0.2, labelsize = 2) + ggtitle("Key Words in Positive and Negative Tweets") + labs(x = "Probability", y = "Features")
+
+```
+
+```{r}
+textplot_keyness(tstat_key, n = 50, 
+                 show_reference = FALSE,
+                 show_legend = FALSE,
+                 color = c("#C7CEF6", "#E6A2C5"), margin = 0.2, labelsize = 2) + ggtitle("Key Words in Positive Tweets") + labs(x = "Probability", y = "Features")
+```
+```{r}
+tstat_key <- textstat_keyness(btmdfm, 
+                              target = kr$type == "negative")
+
+textplot_keyness(tstat_key, n = 50, 
+                 show_reference = FALSE,
+                 show_legend = FALSE,
+                 color = c( "#E6A2C5"), margin = 0.2, labelsize = 2) + ggtitle("Key Words in Negative Tweets") + labs(x = "Probability", y = "Features")
+
+```
+
+
+```{r}
+tstat_key2 <- textstat_keyness(btmdfm, 
+                              target = kr$type == "negative")
+tstat_key2 <- tstat_key2[-c(tstat_key2$feature=="fuck"),]
+tstat_key2 <- tstat_key2[-c(tstat_key2$feature=="people"),]
+tstat_key2 <- tstat_key2[-c(tstat_key2$feature=="shit"),]
+
+textplot_keyness(tstat_key2, n = 30, 
+                 show_reference = FALSE,
+                 color = c("#E6A2C5"), margin = 0.1, labelsize = 3) + ggtitle("Key Words in Negative Tweets") + labs(x = "Probability", y = "Features")
+```
+
+
+
+
+##  TOPIC MODELLING
+```{r}
+#library(udpipe)
+#library(BTM)
+#
+##building the dataset contained two columns, one is the doc_id, one is lemma verion
+#btmdf <- mycorpus[,c(1, 2, 4)]
+#btmdf$doc <- c(1:nrow(btmdf))
+##creating corpus
+#btmcorpus <- corpus(btmdf, text_field = "text")
+##assigning names to the documents
+#docnames(btmcorpus) <- docvars(btmcorpus, "doc")
+#summary(btmcorpus)
+#
+##tokenization
+#btmtoken <- tokens(btmcorpus, verbose = TRUE, 
+#                   remove_numbers = TRUE, remove_punct = TRUE, 
+#                   remove_twitter = TRUE, remove_separators = TRUE)
+##remove stop words
+#btmtoken <- tokens_remove(btmtoken, stopwords("english"))
+##lower case
+#btmtoken <- tokens_tolower(btmtoken)
+
+```
+
+```{r}
+#btmcorpus <- corpus(btmdf, text_field = "text")
+##Run LDA for each tweets
+#library(topicmodels)
+#btmdfm <- dfm(btmcorpus,
+#                  remove = c(stopwords("english"),"also", "just", 
+#                             "well", "can", "one", "many", "two", 
+#                             "make", "even", "ever", "thing"),
+#                  remove_punct = TRUE,
+#                  remove_numbers = TRUE,
+#                  remove_url = TRUE)
+#trim_btmdfm <- trim_btmdfm%>% dfm_select(min_nchar = 2) %>% dfm_trim(min_termfreq = 5)
+##trim_btmdfm <- dfm_trim(btmdfm, min_termfreq = 20, min_docfreq = 5)
+#rowTotals <- apply(trim_btmdfm , 1, sum) 
+#dfm_new <- trim_btmdfm[rowTotals>0, ] 
+#
+#K <- 10
+#covid_lda <- LDA(dfm_new, k = K, method = "Gibbs",
+#               control = list(verbose = 25L, seed = 123, burnin = 100, iter = 500))
+#
+## Find the most likely topic for each row (tweet)
+#pst_topics <- get_topics(covid_lda, 1)
+#
+## Assign them to r dataframe
+#r <- dbGetQuery(db, "SELECT * FROM vader")
+#leftdoc <- which(rowTotals ==TRUE)
+#docindex <- data.frame(leftdoc)
+#r$topic <- unname(pst_topics)
+```
+
+Draw word clouds for April 13
+```{r}
+#drawing word clouds for most frequently hashtags.
+library(tidytext)
+library(dplyr)
+library(stringr)
+library(rtweet)
+library(wordcloud2)
+kr13 <- kr[kr$created_at == "2020-04-13",]
+kr13 <- kr13[kr13$type == "negative",]
+hmtTable <- kr13 %>% 
+  unnest_tokens(word, text)
+#remove stop words - aka typically very common words such as "the", "of" etc
+data(stop_words)
+hmtTable <- hmtTable %>%
+  anti_join(stop_words)
+#do a word count
+hmtTable <- hmtTable %>%
+  count(word, sort = TRUE) 
+hmtTable 
+#Remove other nonsense words
+hmtTable <-hmtTable %>%
+  filter(!word %in% c('t.co', 'https', 'handmaidstale', "handmaid's", 'season', 'episode', 'de', 'handmaidsonhulu',  'tvtime', 'watched', 'watching', 'watch', 'la', "it's", 'el', 'en', 'tv','je', 'ep', 'week', 'amp'))
+wordcloud2(hmtTable, size=0.7)
+
+wordcloud(words = kr$text, freq = df_hashtag$Freq, min.freq = 140,
+          max.words = 100, random.order = FALSE, rot.per = 0.4,
+          scale = c(3.5, 0.35),
+          colors = brewer.pal(6, "Paired"))
+```
+
+```{r}
+kr29 <- kr[kr$created_at == "2020-04-29",]
+kr29 <- kr29[kr29$type == "negative",]
+hmtTable29 <- kr29 %>% 
+  unnest_tokens(word, text)
+#remove stop words - aka typically very common words such as "the", "of" etc
+data(stop_words)
+hmtTable29 <- hmtTable29 %>%
+  anti_join(stop_words)
+#do a word count
+hmtTable29 <- hmtTable29 %>%
+  count(word, sort = TRUE) 
+hmtTable29 
+#Remove other nonsense words
+hmtTable29 <-hmtTable29 %>%
+  filter(!word %in% c('t.co', 'https', 'handmaidstale', "handmaid's", 'season', 'episode', 'de', 'handmaidsonhulu',  'tvtime', 'watched', 'watching', 'watch', 'la', "it's", 'el', 'en', 'tv','je', 'ep', 'week', 'amp', 'coronavirus','covid19','lockdown'))
+#wordcloud2(hmtTable29, size=0.7)
+```
+
